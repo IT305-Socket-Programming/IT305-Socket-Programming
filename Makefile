@@ -1,9 +1,16 @@
-all: test
+CC      ?= gcc
+CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wpedantic
+LDFLAGS ?= -pthread
 
-test:
-	$(MAKE) -C tests run
+all: server client
+
+server: server.c common.c common.h
+	$(CC) $(CFLAGS) -pthread -o $@ server.c common.c $(LDFLAGS)
+
+client: client.c common.c common.h
+	$(CC) $(CFLAGS) -o $@ client.c common.c
 
 clean:
-	$(MAKE) -C tests clean
+	rm -f server client
 
-.PHONY: all test clean
+.PHONY: all clean
