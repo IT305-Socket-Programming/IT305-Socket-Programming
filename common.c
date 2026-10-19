@@ -29,7 +29,14 @@ int send_all(int fd, const void *buf, size_t n, int flags)
     while (n > 0) {
         ssize_t r = send(fd, p, n, MSG_NOSIGNAL | flags);
         if (r < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) {
+                if (g_stop) return -1;
+                continue;
+            }
+            return -1;
+        }
+        if (r == 0) {
+            errno = ECONNRESET;
             return -1;
         }
         p += r;
@@ -44,7 +51,10 @@ int recv_all(int fd, void *buf, size_t n)
     while (n > 0) {
         ssize_t r = recv(fd, p, n, 0);
         if (r < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) {
+                if (g_stop) return -1;
+                continue;
+            }
             return -1;
         }
         if (r == 0) {            /* peer closed */
@@ -102,7 +112,10 @@ int conn_recv(conn_t *c, msg_hdr_t *h, uint8_t *payload)
     if (h->len > MAX_PAYLOAD)               { c->err = "payload too large";    return -2; }
     if (h->seq != c->rx_seq)                { c->err = "bad sequence number";  return -2; }
 
-    if (h->len && recv_all(c->fd, payload, h->len) != 0) return -1;
+    if (h->len) {
+        if (!payload)                       { c->err = "null payload buffer";  return -2; }
+        if (recv_all(c->fd, payload, h->len) != 0) return -1;
+    }
     c->rx_seq++;
     c->rx_bytes += HDR_LEN + h->len;
     return 0;
@@ -123,12 +136,14 @@ int mkdir_p(const char *path)
 {
     char tmp[PATH_MAX];
     struct stat st;
+    if (!path) return -1;
     size_t len = strlen(path);
     if (len == 0 || len >= sizeof tmp) return -1;
     memcpy(tmp, path, len + 1);
 
     for (char *p = tmp + 1; *p; p++) {
         if (*p == '/') {
+            if (*(p - 1) == '/') continue; /* collapse consecutive slashes */
             *p = '\0';
             if (mkdir(tmp, 0755) != 0 && errno != EEXIST) return -1;
             *p = '/';
@@ -140,7 +155,16 @@ int mkdir_p(const char *path)
 
 int safe_name(const char *name)
 {
-    if (name[0] == '\0') return 0;
+    if (!name || name[0] == '\0') return 0;
+    size_t len = strlen(name);
+    if (len > MAX_NAME) return 0;
     if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return 0;
-    return strchr(name, '/') == NULL;
+    /* Reject path separators */
+    if (strchr(name, '/') != NULL || strchr(name, '\\') != NULL) return 0;
+    /* Reject control characters and DEL */
+    for (size_t i = 0; i < len; i++) {
+        unsigned char uc = (unsigned char)name[i];
+        if (uc < 32 || uc == 127) return 0;
+    }
+    return 1;
 }

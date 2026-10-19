@@ -14,12 +14,16 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <netdb.h>
+#include <netinet/tcp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+volatile sig_atomic_t g_stop = 0;
 
 static void die(const char *fmt, ...)
 {
@@ -51,6 +55,9 @@ static int connect_to(const char *host, const char *port)
     }
     freeaddrinfo(res);
     if (fd < 0) die("cannot connect to %s:%s: %s", host, port, strerror(errno));
+
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
     return fd;
 }
 
@@ -76,6 +83,7 @@ static void write_full(int fd, const uint8_t *p, size_t n, const char *path)
     while (n > 0) {
         ssize_t r = write(fd, p, n);
         if (r < 0) { if (errno == EINTR) continue; die("write %s: %s", path, strerror(errno)); }
+        if (r == 0) die("write %s: zero bytes written", path);
         p += r;
         n -= (size_t)r;
     }
@@ -88,7 +96,19 @@ int main(int argc, char **argv)
         return 2;
     }
     const char *host = argv[1], *port = argv[2], *topic = argv[3], *outdir = argv[4];
+    char *end;
+    long p = strtol(port, &end, 10);
+    if (*port == '\0' || *end != '\0' || p < 1 || p > 65535) die("invalid port '%s'", port);
     if (strlen(topic) >= TOPIC_FIELD || !safe_name(topic)) die("invalid topic name");
+    if (outdir[0] == '\0') die("output directory cannot be empty");
+
+    char clean_outdir[PATH_MAX];
+    size_t olen = strlen(outdir);
+    if (olen >= sizeof clean_outdir) die("output directory path too long");
+    memcpy(clean_outdir, outdir, olen + 1);
+    while (olen > 1 && clean_outdir[olen - 1] == '/') {
+        clean_outdir[--olen] = '\0';
+    }
 
     double wall0 = wall_sec(), t0 = now_sec();
     int fd = connect_to(host, port);
@@ -103,7 +123,7 @@ int main(int argc, char **argv)
     uint8_t req[TOPIC_FIELD];
     memset(req, 0, sizeof req);
     memcpy(req, topic, strlen(topic));
-    if (conn_send(&c, MSG_GET_REQ, 0, req, sizeof req, 0) != 0) die("send failed: %s", strerror(errno));
+    if (conn_send(&c, MSG_GET_REQ, 0, req, sizeof req, 0) != 0) die("send request failed: %s", strerror(errno));
 
     /* manifest */
     recv_expect(&c, &h, pl, MSG_MANIFEST_START);
@@ -130,7 +150,7 @@ int main(int argc, char **argv)
     if (h.len != 4 || get32(pl) != nfiles || sum != total) die("manifest inconsistent");
 
     char dir[PATH_MAX];
-    if ((size_t)snprintf(dir, sizeof dir, "%s/%s", outdir, topic) >= sizeof dir) die("output path too long");
+    if ((size_t)snprintf(dir, sizeof dir, "%s/%s", clean_outdir, topic) >= sizeof dir) die("output path too long");
     if (mkdir_p(dir) != 0) die("cannot create %s: %s", dir, strerror(errno));
 
     /* files */
@@ -145,8 +165,16 @@ int main(int argc, char **argv)
 
         char path[PATH_MAX];
         if ((size_t)snprintf(path, sizeof path, "%s/%s", dir, files[i].name) >= sizeof path) die("path too long");
-        int ofd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (ofd < 0) die("cannot create %s: %s", path, strerror(errno));
+        int ofd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+        if (ofd < 0) {
+            if (errno == ELOOP) die("cannot create %s: symbolic link in destination path rejected", path);
+            die("cannot create %s: %s", path, strerror(errno));
+        }
+        struct stat st;
+        if (fstat(ofd, &st) != 0 || !S_ISREG(st.st_mode)) {
+            close(ofd);
+            die("destination %s is not a regular file", path);
+        }
 
         uint64_t got = 0;
         while (got < files[i].size) {
@@ -158,7 +186,7 @@ int main(int argc, char **argv)
             write_full(ofd, pl, h.len, path);
             got += h.len;
         }
-        close(ofd);
+        if (close(ofd) != 0) die("close %s: %s", path, strerror(errno));
         data_bytes += got;
     }
 

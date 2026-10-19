@@ -38,10 +38,103 @@ typedef struct {
 static topic_t *g_topics;
 static size_t   g_ntopics;
 
-static volatile sig_atomic_t g_stop;
+volatile sig_atomic_t g_stop = 0;
 static atomic_ullong g_total_data_bytes;
 static atomic_ullong g_total_clients;
-static atomic_int    g_active;
+#ifndef MAX_ACTIVE_CLIENTS
+#define MAX_ACTIVE_CLIENTS 1024
+#endif
+
+typedef struct {
+    pthread_mutex_t lock;
+    pthread_cond_t  cond;
+    int             active_workers;
+    int             fds[MAX_ACTIVE_CLIENTS];
+} client_registry_t;
+
+static client_registry_t g_client_reg;
+
+static void client_reg_init(void)
+{
+    pthread_mutex_init(&g_client_reg.lock, NULL);
+    pthread_cond_init(&g_client_reg.cond, NULL);
+    g_client_reg.active_workers = 0;
+    for (size_t i = 0; i < MAX_ACTIVE_CLIENTS; i++) {
+        g_client_reg.fds[i] = -1;
+    }
+}
+
+static int client_reg_add(int fd)
+{
+    int ret = -1;
+    pthread_mutex_lock(&g_client_reg.lock);
+    for (size_t i = 0; i < MAX_ACTIVE_CLIENTS; i++) {
+        if (g_client_reg.fds[i] == -1) {
+            g_client_reg.fds[i] = fd;
+            g_client_reg.active_workers++;
+            ret = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_client_reg.lock);
+    return ret;
+}
+
+static void client_reg_del(int fd)
+{
+    pthread_mutex_lock(&g_client_reg.lock);
+    int found = 0;
+    for (size_t i = 0; i < MAX_ACTIVE_CLIENTS; i++) {
+        if (g_client_reg.fds[i] == fd) {
+            g_client_reg.fds[i] = -1;
+            close(fd);
+            g_client_reg.active_workers--;
+            if (g_client_reg.active_workers == 0) {
+                pthread_cond_broadcast(&g_client_reg.cond);
+            }
+            found = 1;
+            break;
+        }
+    }
+    if (!found) {
+        close(fd);
+    }
+    pthread_mutex_unlock(&g_client_reg.lock);
+}
+
+static void client_reg_interrupt_all(void)
+{
+    pthread_mutex_lock(&g_client_reg.lock);
+    for (size_t i = 0; i < MAX_ACTIVE_CLIENTS; i++) {
+        if (g_client_reg.fds[i] >= 0) {
+            shutdown(g_client_reg.fds[i], SHUT_RDWR);
+        }
+    }
+    pthread_mutex_unlock(&g_client_reg.lock);
+}
+
+static int client_reg_wait_empty(long timeout_ms)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += timeout_ms / 1000;
+    ts.tv_nsec += (timeout_ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) {
+        ts.tv_sec += ts.tv_nsec / 1000000000L;
+        ts.tv_nsec %= 1000000000L;
+    }
+
+    pthread_mutex_lock(&g_client_reg.lock);
+    while (g_client_reg.active_workers > 0) {
+        int rc = pthread_cond_timedwait(&g_client_reg.cond, &g_client_reg.lock, &ts);
+        if (rc == ETIMEDOUT) {
+            break;
+        }
+    }
+    int remaining = g_client_reg.active_workers;
+    pthread_mutex_unlock(&g_client_reg.lock);
+    return remaining;
+}
 
 #define LOG(...) do { fprintf(stderr, "[server] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 
@@ -55,6 +148,14 @@ static int load_topics(const char *root)
     DIR *d = opendir(root);
     if (!d) { fprintf(stderr, "cannot open topics dir '%s': %s\n", root, strerror(errno)); return -1; }
 
+    char clean_root[PATH_MAX];
+    size_t rlen = strlen(root);
+    if (rlen == 0 || rlen >= sizeof clean_root) { closedir(d); return -1; }
+    memcpy(clean_root, root, rlen + 1);
+    while (rlen > 1 && clean_root[rlen - 1] == '/') {
+        clean_root[--rlen] = '\0';
+    }
+
     size_t cap = 16;
     g_topics = malloc(cap * sizeof *g_topics);
     if (!g_topics) { closedir(d); return -1; }
@@ -62,9 +163,10 @@ static int load_topics(const char *root)
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;
+        if (!safe_name(e->d_name)) continue;
         topic_t t;
         if (strlen(e->d_name) >= TOPIC_FIELD) { LOG("skipping '%s': name too long", e->d_name); continue; }
-        int n = snprintf(t.dir, sizeof t.dir, "%s/%s", root, e->d_name);
+        int n = snprintf(t.dir, sizeof t.dir, "%s/%s", clean_root, e->d_name);
         if (n < 0 || (size_t)n >= sizeof t.dir) { LOG("skipping '%s': path too long", e->d_name); continue; }
 
         struct stat st;
@@ -128,10 +230,12 @@ static int list_files(const char *dir, fentry_t **out, size_t *count)
     while ((e = readdir(d)) != NULL) {
         char path[PATH_MAX];
         struct stat st;
-        if (strlen(e->d_name) > MAX_NAME) continue;
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        if (strlen(e->d_name) > MAX_NAME || !safe_name(e->d_name)) continue;
         int len = snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
         if (len < 0 || (size_t)len >= sizeof path) continue;
         if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;   /* regular files only */
+        if (access(path, R_OK) != 0) continue;                        /* readable files only */
 
         if (n == cap) {
             cap *= 2;
@@ -231,11 +335,20 @@ static void handle_client(int fd, const char *peer)
 
     /* 3. files */
     for (size_t i = 0; i < nfiles; i++) {
+        if (g_stop) goto out;
         char path[PATH_MAX];
         int plen = snprintf(path, sizeof path, "%s/%s", t->dir, files[i].name);
-        if (plen < 0 || (size_t)plen >= sizeof path) { LOG("%s: path too long for %s", peer, files[i].name); goto out; }
+        if (plen < 0 || (size_t)plen >= sizeof path) {
+            LOG("%s: path too long for %s", peer, files[i].name);
+            send_error(&c, ERR_INTERNAL, "path too long");
+            goto out;
+        }
         ffd = open(path, O_RDONLY);
-        if (ffd < 0) { LOG("%s: cannot open %s: %s", peer, path, strerror(errno)); goto out; }
+        if (ffd < 0) {
+            LOG("%s: cannot open %s: %s", peer, path, strerror(errno));
+            send_error(&c, ERR_INTERNAL, "cannot open file");
+            goto out;
+        }
         posix_fadvise(ffd, 0, 0, POSIX_FADV_SEQUENTIAL);
 
         uint8_t fh[4 + 8 + 8 + 2 + MAX_NAME];
@@ -249,10 +362,12 @@ static void handle_client(int fd, const char *peer)
 
         uint64_t sent = 0;
         while (sent < files[i].size) {
+            if (g_stop) goto out;
             uint64_t left = files[i].size - sent;
             uint32_t n = left < CHUNK_SIZE ? (uint32_t)left : CHUNK_SIZE;
             if (read_full(ffd, buf + HDR_LEN, n) != 0) {
                 LOG("%s: read error/short read on %s", peer, path);
+                send_error(&c, ERR_INTERNAL, "file read error");
                 goto out;
             }
             uint8_t flags = (sent + n == files[i].size) ? FLAG_EOF_FILE : 0;
@@ -295,8 +410,7 @@ static void *worker(void *arg)
     job_t j = *(job_t *)arg;
     free(arg);
     handle_client(j.fd, j.peer);
-    close(j.fd);
-    atomic_fetch_sub(&g_active, 1);
+    client_reg_del(j.fd);
     return NULL;
 }
 
@@ -320,10 +434,25 @@ int main(int argc, char **argv)
     }
     char *end;
     long port = strtol(argv[1], &end, 10);
-    if (*end || port < 1 || port > 65535) { fprintf(stderr, "invalid port '%s'\n", argv[1]); return 2; }
+    if (*argv[1] == '\0' || *end != '\0' || port < 1 || port > 65535) {
+        fprintf(stderr, "invalid port '%s'\n", argv[1]);
+        return 2;
+    }
 
-    if (load_topics(argv[2]) != 0) return 1;
-    if (g_ntopics == 0) { fprintf(stderr, "no topic sub-directories found in '%s'\n", argv[2]); return 1; }
+    client_reg_init();
+
+    if (load_topics(argv[2]) != 0) {
+        pthread_mutex_destroy(&g_client_reg.lock);
+        pthread_cond_destroy(&g_client_reg.cond);
+        return 1;
+    }
+    if (g_ntopics == 0) {
+        fprintf(stderr, "no topic sub-directories found in '%s'\n", argv[2]);
+        free(g_topics);
+        pthread_mutex_destroy(&g_client_reg.lock);
+        pthread_cond_destroy(&g_client_reg.cond);
+        return 1;
+    }
     for (size_t i = 0; i < g_ntopics; i++) LOG("topic '%s' -> %s", g_topics[i].name, g_topics[i].dir);
 
     struct sigaction sa;
@@ -334,7 +463,13 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
 
     int lfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (lfd < 0) { perror("socket"); return 1; }
+    if (lfd < 0) {
+        perror("socket");
+        free(g_topics);
+        pthread_mutex_destroy(&g_client_reg.lock);
+        pthread_cond_destroy(&g_client_reg.cond);
+        return 1;
+    }
     int one = 1;
     setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     struct sockaddr_in addr;
@@ -342,8 +477,22 @@ int main(int argc, char **argv)
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons((uint16_t)port);
-    if (bind(lfd, (struct sockaddr *)&addr, sizeof addr) != 0) { perror("bind"); return 1; }
-    if (listen(lfd, 128) != 0) { perror("listen"); return 1; }
+    if (bind(lfd, (struct sockaddr *)&addr, sizeof addr) != 0) {
+        perror("bind");
+        close(lfd);
+        free(g_topics);
+        pthread_mutex_destroy(&g_client_reg.lock);
+        pthread_cond_destroy(&g_client_reg.cond);
+        return 1;
+    }
+    if (listen(lfd, 512) != 0) {
+        perror("listen");
+        close(lfd);
+        free(g_topics);
+        pthread_mutex_destroy(&g_client_reg.lock);
+        pthread_cond_destroy(&g_client_reg.cond);
+        return 1;
+    }
     LOG("listening on port %ld, mode=%s", port, multi ? "multi-threaded" : "single-threaded");
 
     while (!g_stop) {
@@ -361,20 +510,29 @@ int main(int argc, char **argv)
         inet_ntop(AF_INET, &pa.sin_addr, ip, sizeof ip);
         snprintf(peer, sizeof peer, "%s:%u", ip, ntohs(pa.sin_port));
 
+        if (client_reg_add(cfd) != 0) {
+            LOG("client registry full (%d active clients); rejecting connection from %s",
+                MAX_ACTIVE_CLIENTS, peer);
+            close(cfd);
+            continue;
+        }
+
         if (!multi) {                          /* serve sequentially */
             handle_client(cfd, peer);
-            close(cfd);
+            client_reg_del(cfd);
         } else {                               /* one detached thread per client */
             job_t *j = malloc(sizeof *j);
             pthread_t th;
-            if (!j) { close(cfd); continue; }
+            if (!j) {
+                LOG("out of memory creating job for %s", peer);
+                client_reg_del(cfd);
+                continue;
+            }
             j->fd = cfd;
             strcpy(j->peer, peer);
-            atomic_fetch_add(&g_active, 1);
             if (pthread_create(&th, NULL, worker, j) != 0) {
                 LOG("pthread_create failed for %s", peer);
-                atomic_fetch_sub(&g_active, 1);
-                close(cfd);
+                client_reg_del(cfd);
                 free(j);
                 continue;
             }
@@ -384,9 +542,19 @@ int main(int argc, char **argv)
 
     LOG("shutting down...");
     close(lfd);
-    for (int i = 0; i < 100 && atomic_load(&g_active) > 0; i++) usleep(100000);   /* wait up to 10 s */
+    client_reg_interrupt_all();
+    int remaining = client_reg_wait_empty(5000);   /* wait up to 5 s for all workers to finish */
     LOG("served %llu clients, %llu data bytes", (unsigned long long)g_total_clients,
         (unsigned long long)g_total_data_bytes);
-    free(g_topics);
+    if (remaining == 0) {
+        LOG("Server stopped cleanly");
+        free(g_topics);
+        g_topics = NULL;
+        pthread_mutex_destroy(&g_client_reg.lock);
+        pthread_cond_destroy(&g_client_reg.cond);
+    } else {
+        LOG("shutdown timeout: %d active worker(s) still running; preserving registry and topic memory to prevent use-after-free",
+            remaining);
+    }
     return 0;
 }

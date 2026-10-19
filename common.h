@@ -28,8 +28,11 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#include <signal.h>
 #include <stdint.h>
 #include <stddef.h>
+
+extern volatile sig_atomic_t g_stop;
 
 #define PROTO_MAGIC   0x5446u
 #define HDR_LEN       12

@@ -1,1 +1,7 @@
 /raw-img/
+server
+client
+*.o
+*.csv
+test_out/
+out/

@@ -174,12 +174,14 @@ The recommended setup is **3 machines**: machine A runs the server, B and C each
 **On machines B and C** – start them at about the same moment (clocks should be NTP-synced):
 
 ```bash
-# usage: ./bench.sh <server_ip> <port> <label> <N_on_this_machine> <results.csv> <topic1,topic2,...>
-./bench.sh <A_ip> 5000 single 8 B.csv cane,cavallo,elefante,farfalla
-./bench.sh <A_ip> 5000 single 8 C.csv gallina,gatto,mucca,pecora
+# usage: ./bench.sh <server_ip> <port> <label> <N_on_this_machine> <results.csv> <topic1,topic2,...> [trial_id] [total_clients]
+# Machine B (8 clients, trial 1, intended total 16 clients):
+./bench.sh <A_ip> 5000 single 8 B.csv cane,cavallo,elefante,farfalla 1 16
+# Machine C (8 clients, trial 1, intended total 16 clients):
+./bench.sh <A_ip> 5000 single 8 C.csv gallina,gatto,mucca,pecora 1 16
 ```
 
-Here 8 + 8 = **16 clients total**. Clients take the topic list round-robin.
+Here 8 + 8 = **16 clients total**. Specifying the shared `trial_id` (e.g. `1`, `2`, `3`) and `total_clients` (`16`) ensures `aggregate.py` properly merges distributed client groups belonging to the same trial while keeping independent trial repeats separate.
 
 **Combine the results** (copy B.csv and C.csv to one place):
 
@@ -187,8 +189,8 @@ Here 8 + 8 = **16 clients total**. Clients take the topic list round-robin.
 python3 aggregate.py B.csv C.csv -o summary_single.csv
 ```
 
-Output columns: `label, nclients, ok, failed, total_data_bytes, wall_secs, aggregate_mbps, avg_client_mbps`.
-Aggregate rate = total data bytes of all clients / (latest end - earliest start).
+Output columns: `trial, label, total_clients, ok, failed, total_data_bytes, wall_secs, aggregate_mbps, avg_client_mbps`.
+Aggregate rate = total data bytes of all clients in the trial / (latest end - earliest start).
 
 **Recommended sweep:** N = 2, 4, 8, 16, 32 (split evenly between B and C), for both `single` and `multi`,
 3–5 repeats per point (average them), and one warm-up run first so the server's disk cache is the same
