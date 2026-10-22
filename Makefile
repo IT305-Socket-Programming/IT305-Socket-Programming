@@ -10,7 +10,11 @@ server: server.c common.c common.h
 client: client.c common.c common.h
 	$(CC) $(CFLAGS) -o $@ client.c common.c
 
-clean:
-	rm -f server client
+test: all
+	bash test_part1.sh
 
-.PHONY: all clean
+clean:
+	rm -f server client *.o *.csv
+	rm -rf test_out out
+
+.PHONY: all clean test
