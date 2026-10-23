@@ -48,6 +48,13 @@ A high-performance POSIX C99 topic file distribution architecture over TCP featu
 | **Part 2 Case 2** | Fault-Tolerant Session Resume: Durable disk checkpointing (`.session_<topic>.chk`) and server session table | Monotonic ACK commitment, zero redundant byte retransmission, SHA-256 integrity |
 | **Part 2 Case 2 Enhanced** | Multi-Stream Parallel TCP Connections: $K$ simultaneous TCP connections over disjoint byte ranges | Work-stealing range reactor, link saturation, parallel speedup |
 
+### Quickstart & Test Dataset Setup
+
+To instantly generate a working test dataset containing all 10 official topics (`cane`, `cavallo`, `elefante`, etc.) with synthetic test files:
+```bash
+bash setup_dataset.sh ./dataset
+```
+
 ---
 
 ### Build Instructions
