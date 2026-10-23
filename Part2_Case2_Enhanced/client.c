@@ -15,7 +15,6 @@ typedef struct {
     const char      *staging_dir;
     uint32_t         total_files;
     client_fentry_t *files;
-    int             *file_fds;
     atomic_uint_fast64_t *transmitted_payload_bytes;
     atomic_uint_fast64_t *protocol_bytes;
     int              worker_status; /* 0 = OK, -1 = ERROR */
@@ -103,7 +102,17 @@ static void *stream_worker(void *arg)
             break;
         }
 
-        int fd = w->file_fds[fidx];
+        char fpath[PATH_MAX + 512];
+        int path_len = snprintf(fpath, sizeof fpath, "%s/%s", w->staging_dir,
+                                w->files[fidx].name);
+        if (path_len < 0 || (size_t)path_len >= sizeof fpath) {
+            w->worker_status = -1;
+            break;
+        }
+
+        /* Open only the file being written. Keeping one descriptor per topic
+         * file exceeds common per-process limits for large datasets. */
+        int fd = open(fpath, O_WRONLY | O_NOFOLLOW);
         if (fd < 0) {
             w->worker_status = -1;
             break;
@@ -111,12 +120,20 @@ static void *stream_worker(void *arg)
 
         /* Concurrent disjoint pwrite to exact offset */
         const uint8_t *raw_chunk = pl + 16;
-        ssize_t pw = pwrite(fd, raw_chunk, len, (off_t)off);
-        if (pw != (ssize_t)len) {
+        size_t written = 0;
+        while (written < len) {
+            ssize_t pw = pwrite(fd, raw_chunk + written, len - written,
+                                (off_t)(off + written));
+            if (pw < 0 && errno == EINTR) continue;
+            if (pw <= 0) break;
+            written += (size_t)pw;
+        }
+        if (written != len || fdatasync(fd) != 0) {
+            close(fd);
             w->worker_status = -1;
             break;
         }
-        fdatasync(fd); /* Durably persist chunk to disk */
+        close(fd); /* Durably persisted above; release before the next block. */
 
         atomic_fetch_add(w->transmitted_payload_bytes, len);
 
@@ -423,18 +440,31 @@ int main(int argc, char **argv)
 
         save_client_checkpoint(chk_path, saved_session_id, topic, manifest_hash, total_files, files);
 
-        /* Pre-open/truncate files in staging directory for concurrent pwrite */
-        int *file_fds = calloc(total_files, sizeof(int));
+        /* Create and size files one at a time. Do not retain one descriptor
+         * per file: Animals10 topics contain thousands of files. */
+        int files_ready = 1;
         for (uint32_t i = 0; i < total_files; i++) {
             char fpath[PATH_MAX + 512];
-            snprintf(fpath, sizeof fpath, "%s/%s", staging_dir, files[i].name);
-            int fd = open(fpath, O_RDWR | O_CREAT, 0644);
-            if (fd >= 0) {
-                if (ftruncate(fd, (off_t)files[i].size) != 0) {
-                    /* truncate safely */
-                }
+            int path_len = snprintf(fpath, sizeof fpath, "%s/%s", staging_dir,
+                                    files[i].name);
+            if (path_len < 0 || (size_t)path_len >= sizeof fpath) {
+                files_ready = 0;
+                break;
             }
-            file_fds[i] = fd;
+            int fd = open(fpath, O_WRONLY | O_CREAT | O_NOFOLLOW, 0644);
+            if (fd < 0 || ftruncate(fd, (off_t)files[i].size) != 0) {
+                if (fd >= 0) close(fd);
+                files_ready = 0;
+                break;
+            }
+            close(fd);
+        }
+
+        if (!files_ready) {
+            atomic_fetch_add(&total_protocol_bytes, ctrl_c.tx_bytes + ctrl_c.rx_bytes);
+            close(cfd);
+            usleep(50000);
+            continue;
         }
 
         /* Launch assigned_streams worker threads */
@@ -449,7 +479,6 @@ int main(int argc, char **argv)
             wargs[k].staging_dir = staging_dir;
             wargs[k].total_files = total_files;
             wargs[k].files = files;
-            wargs[k].file_fds = file_fds;
             wargs[k].transmitted_payload_bytes = &transmitted_payload_bytes;
             wargs[k].protocol_bytes = &total_protocol_bytes;
             wargs[k].worker_status = 0;
@@ -463,12 +492,6 @@ int main(int argc, char **argv)
             pthread_join(threads[k], NULL);
             if (wargs[k].worker_status != 0) any_worker_failed = 1;
         }
-
-        /* Close open staging file descriptors */
-        for (uint32_t i = 0; i < total_files; i++) {
-            if (file_fds[i] >= 0) close(file_fds[i]);
-        }
-        free(file_fds);
 
         if (!any_worker_failed) {
             struct timeval tv;
