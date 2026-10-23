@@ -1,7 +1,55 @@
+# Datasets
 /raw-img/
+/dataset/
+dataset/
+
+# Build executables and compilation artifacts
 server
 client
 *.o
-*.csv
+*.exe
+*.dSYM/
+
+# Intermediate test, benchmark, and runtime outputs
 test_out/
 out/
+logs/
+eval_test/
+it305-test-results/
+.staging/
+.staging_*
+.session_*.chk
+results_*.csv
+summary_*.csv
+
+# Python cache & environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+
+# LaTeX auxiliary and build files
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+
+# Operating System artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor and IDE configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

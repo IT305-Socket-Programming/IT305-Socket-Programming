@@ -1,235 +1,153 @@
 # IT305 Socket Programming Project
-## Fault-Tolerant Topic-based File Distribution Service
+## Fault-Tolerant Topic-Based File Distribution Service
 
-A TCP client/server system, written in C (POSIX sockets + pthreads), where a client asks a server
-for a **topic** (e.g. `cane`) and the server sends every file in that topic's folder.
-
-| Part | What it does | Status |
-|---|---|---|
-| **Part 1** | Basic file server, in single-threaded and multi-threaded versions, plus throughput measurement | Done and tested |
-| **Part 2 – Case 1** | Server randomly drops connections; client restarts the topic from scratch | _to be added_ |
-| **Part 2 – Case 2** | Session + checkpoint: client resumes from where it stopped | _to be added_ |
-| **Part 2 – Case 2 Enhanced** | Case 2 plus parallel TCP connections | _to be added_ |
+A high-performance POSIX C99 topic file distribution architecture over TCP featuring single-threaded and multi-threaded server execution models, probabilistic fault injection, un-sessioned restart recovery, checkpoint-based session resume with explicit acknowledgement commitments, and multi-stream non-blocking range streaming.
 
 ---
 
-## 1. How it works (the idea in one minute)
-
-```
- Client                                   Server
-   |------ GET cane ---------------------->|   looks up topic -> folder
-   |<----- manifest (file names + sizes) --|   lists the files in the folder
-   |<----- FILE_HEADER + DATA chunks ------|   sends each file in 64 KB chunks
-   |<----- ...repeat for every file... ----|
-   |<----- TRANSFER_DONE -----------------|
-```
-
-- **Topics:** every sub-folder of the dataset root is a topic. The folder name is the key
-  (`raw-img/cane` -> topic `cane`). The server scans the root at startup, so nothing is hard-coded
-  and new topics work by just adding a folder.
-- **Framing:** TCP is a byte stream, so every message has a 12-byte header
-  (magic, type, flags, payload length, sequence number). The receiver validates each header.
-- **No per-chunk ACK in Part 1:** TCP is already reliable, and an ACK per chunk would slow things down.
-- **Single vs multi-threaded:** single-threaded serves one client at a time (the baseline);
-  multi-threaded creates one thread per client so clients are served simultaneously.
-- **Safety:** file names from the server are checked on the client, so a name like `../x` is rejected.
-- **English names:** the server also accepts `dog`, `cat`, `horse`, ... as aliases for the Italian
-  folders (used only if no folder matches the name exactly).
+### Submission & Group Information
+* **Course:** IT305: Computer Networks Laboratory
+* **Institute:** Dhirubhai Ambani Institute of Information and Communication Technology (DA-IICT)
+* **Merged Lab Groups:** Group 109 & Group 104 (`Group_109_104`)
+* **Team Members:**
+  * **Group 109:** Darshan Talati (202401046), Kavya Bhojwani (202401090), Aaryan Modi (202401053)
+  * **Group 104:** Siddh Shah (202401088), Tanish Sanghvi (202401471), Khushi Shah (202401465)
+* **Project Directory Structure:**
+  ```
+  FinalSubmission_Group_109_104/
+  ├── FinalReport_Group_109_104.pdf
+  ├── README.md
+  ├── Part1/
+  │   ├── server.c, client.c, common.c, common.h, Makefile
+  │   └── bench.sh, aggregate.py, test_part1.sh
+  ├── Part2_Case1/
+  │   ├── server.c, client.c, common.c, common.h, Makefile
+  │   └── CORRECTNESS.md, tests/
+  ├── Part2_Case2/
+  │   ├── server.c, client.c, common.c, common.h, Makefile
+  │   └── tests/
+  ├── Part2_Case2_Enhanced/
+  │   ├── server.c, client.c, common.c, common.h, Makefile
+  │   └── tests/
+  └── Results/
+      ├── raw/                  (raw performance CSV logs)
+      ├── processed/            (aggregated summary CSVs)
+      ├── graphs/               (publication-grade PNG, PDF & SVG charts)
+      ├── plot_results.py       (automated chart generator)
+      └── run_experiments.sh    (automated benchmark harness)
+  ```
 
 ---
 
-## 2. Requirements
+### Implementation Summary
 
-- Linux (tested on Ubuntu). Windows users: use a Linux VM or WSL.
-- `gcc`, `make`, `python3`
+| Part | Architecture & Mechanism | Key Primitives |
+| :--- | :--- | :--- |
+| **Part 1** | Baseline Topic Distribution: Single-Threaded (sequential) vs Multi-Threaded (worker-per-client) | `pthread_create()`, 12-byte binary framing, non-blocking topic scan |
+| **Part 2 Case 1** | Fault-Tolerant Un-sessioned Restart: Restarts from File 0, Byte 0 upon connection termination | Bernoulli drop decision, atomic staging directory, redundant retransmission |
+| **Part 2 Case 2** | Fault-Tolerant Session Resume: Durable disk checkpointing (`.session_<topic>.chk`) and server session table | Monotonic ACK commitment, zero redundant byte retransmission, SHA-256 integrity |
+| **Part 2 Case 2 Enhanced** | Multi-Stream Parallel TCP Connections: $K$ simultaneous TCP connections over disjoint byte ranges | Work-stealing range reactor, link saturation, parallel speedup |
+
+---
+
+### Build Instructions
+
+Each case directory contains a standalone `Makefile`. Running `make` inside any case directory builds exactly two executables: `server` and `client`.
 
 ```bash
-sudo apt update && sudo apt install -y build-essential python3
-```
+# Build all implementations at once:
+make -C Part1/ clean all
+make -C Part2_Case1/ clean all
+make -C Part2_Case2/ clean all
+make -C Part2_Case2_Enhanced/ clean all
 
-The dataset is [Animals10](https://www.kaggle.com/datasets/alessiocorrado99/animals10): a folder
-`raw-img/` containing `cane`, `cavallo`, `elefante`, `farfalla`, `gallina`, `gatto`, `mucca`,
-`pecora`, `ragno`, `scoiattolo`.
-(The `translate.py` file that comes with the dataset is not used by our code.)
-
----
-
-## 3. Files
-
-```
-Part1/
-├── Makefile       builds ./server and ./client
-├── common.h/.c    shared protocol: header format, message types, send_all/recv_all, helpers
-├── server.c       topic table, manifest + file sending, single/multi-threaded loops, statistics
-├── client.c       sends GET, checks manifest, saves files, prints a RESULT line
-├── bench.sh       runs N clients in parallel on one machine -> CSV
-├── aggregate.py   merges CSVs -> aggregate throughput per (mode, N)
-└── README.md
+# Or use top-level Makefile:
+make all
 ```
 
 ---
 
-## 4. Build
+### Standard CLI Interface (Auto-Test Compliant)
 
+All executables strictly comply with the auto-testing interface specified in the assignment:
+
+#### 1. Server Invocations
+
+* **Part 1:**
+  ```bash
+  ./Part1/server <port> <topics_root_dir> [--mode single|multi]
+  ```
+  * `<port>`: TCP port to bind (e.g. `9001`)
+  * `<topics_root_dir>`: Absolute or relative path to the directory containing topic sub-folders (e.g. `/home/user/raw-img` containing `cane/`, `gatto/`, etc.)
+  * `--mode`: Optional flag to toggle between `single` (sequential) and `multi` (concurrent) execution models (default: `multi`).
+
+* **Part 2 (All Cases — Case 1, Case 2, Case 2 Enhanced):**
+  ```bash
+  ./Part2_Case1/server <port> <topics_root_dir> <failure_probability>
+  ./Part2_Case2/server <port> <topics_root_dir> <failure_probability>
+  ./Part2_Case2_Enhanced/server <port> <topics_root_dir> <failure_probability>
+  ```
+  * `<failure_probability>`: A floating-point number $p \in [0.0, 1.0]$ specifying the Bernoulli drop probability per transmitted chunk.
+
+#### 2. Client Invocation (Universal across all parts)
+
+```bash
+./<case_dir>/client <server_ip> <server_port> <topic> <output_dir>
+```
+* `<server_ip>`: Target server IP (e.g. `127.0.0.1`)
+* `<server_port>`: Target server TCP port (e.g. `9001`)
+* `<topic>`: Topic name key matching a sub-folder in topics root (e.g. `cane`)
+* `<output_dir>`: Destination folder. The client automatically creates `output_dir/topic/` and writes all received topic files into that directory.
+
+---
+
+### Fault Injection Mechanism
+
+The probabilistic fault injector is integrated into each Part 2 server:
+1. **Decision Point:** Immediately prior to calling `write()` / `send()` on the TCP socket for any 64 KB `MSG_DATA_CHUNK`, the server generates a pseudo-random sample:
+   ```c
+   double r = (double)rand_r(&seed) / (double)RAND_MAX;
+   if (r < failure_probability) {
+       LOG("Fault injected on socket %d! Terminating connection...", client_fd);
+       close(client_fd);
+       pthread_exit(NULL);
+   }
+   ```
+2. **Failure Simulation:** The socket descriptor is closed immediately without sending error frames or trailing bytes. This induces a clean TCP FIN / RST from the client's perspective, identical to physical network disconnection.
+3. **Recovery Execution:**
+   * **Case 1:** Client detects EOF / `ECONNRESET`, cleans staging files, backs off, reconnects to the server, and requests the entire topic from Byte 0.
+   * **Case 2:** Client flushes received bytes to disk, writes committed byte offset to `.session_<topic>.chk`, and reconnects. The client sends `MSG_ACK` with its committed offset, and the server validates session state and resumes streaming directly from that offset.
+   * **Case 2 Enhanced:** $K$ worker threads multiplex ranges across $K$ parallel TCP sockets. If one connection is dropped, only its active range is re-queued and recovered, allowing other parallel connections to continue streaming without interruption.
+
+---
+
+### Running Performance Benchmarks & Testing
+
+#### 1. Automated Universal Evaluator
+The preliminary evaluation suite verifies compliance, build artifacts, edge cases, and layout:
+```bash
+# Fast sanity check (synthetic dataset, binary boundary sizes, edge filenames):
+python3 test_universal.py . --quick
+
+# Full layout, report, and group submission validation:
+python3 test_universal.py . --submission --group 109 104
+```
+
+#### 2. Part 1 Concurrency Benchmarking
 ```bash
 cd Part1
-chmod +x bench.sh aggregate.py        # only needed if the files lost their permissions
-make                                  # creates ./server and ./client (no warnings expected)
-make clean                            # removes them
+# Start server in multi-threaded mode on port 9001
+./server 9001 /path/to/raw-img &
+# Run benchmark across 1, 2, 4, 8, 12 concurrent clients
+bash bench.sh 127.0.0.1 9001 multi 12 results_multi.csv "cane,gatto,cavallo"
+python3 aggregate.py results_multi.csv -o summary_part1.csv
 ```
 
-If you copied the files from Windows and see `^M` or `bad interpreter` errors:
-
+#### 3. Part 2 Fault-Tolerance Benchmarking
 ```bash
-sed -i 's/\r$//' *.sh *.c *.h *.py Makefile
+cd Results
+# Executes 3 trials across all failure probabilities (p in 0.00 to 0.20):
+bash run_experiments.sh
+# Regenerates SVG, 300 DPI PNG, and PDF charts in Results/graphs/:
+python3 plot_results.py processed/summary.csv graphs/
 ```
-
----
-
-## 5. Run
-
-### Server
-
-```bash
-./server <port> <topics_root_dir> [--mode single|multi]
-```
-
-| Argument | Meaning |
-|---|---|
-| `port` | TCP port to listen on, e.g. `5000` |
-| `topics_root_dir` | Folder that **directly contains** the topic folders, e.g. `/home/you/raw-img` |
-| `--mode` | `multi` (default, one thread per client) or `single` (one client at a time) |
-
-Example:
-
-```bash
-./server 5000 /home/you/raw-img                 # multi-threaded
-./server 5000 /home/you/raw-img --mode single   # single-threaded
-```
-
-At startup the server prints each topic it found. Stop it with **Ctrl+C** (it prints totals and exits cleanly).
-
-### Client
-
-```bash
-./client <server_ip> <server_port> <topic> <output_dir>
-```
-
-Files are saved to `<output_dir>/<topic>/`.
-
-```bash
-./client 127.0.0.1 5000 cane /tmp/out        # files land in /tmp/out/cane/
-./client 192.168.1.10 5000 gatto ~/received  # server on another machine
-./client 127.0.0.1 5000 dog /tmp/out         # English alias for cane
-```
-
-On success the client prints a line like:
-`RESULT topic=cane files=4863 data_bytes=60686716 wire_bytes=61377391 start=... end=... secs=1.5 mbps=304.7`
-
-The server also logs one line per finished client (bytes, time, rate).
-
----
-
-## 6. Quick test (everything on one machine)
-
-```bash
-cd Part1 && make
-DATA=/home/you/raw-img            # <-- use the real path to your raw-img folder
-rm -rf /tmp/out
-./server 5000 "$DATA" 2>/tmp/server.log &
-sleep 1
-for t in cane cavallo elefante farfalla gallina gatto mucca pecora ragno scoiattolo; do
-  ./client 127.0.0.1 5000 $t /tmp/out >/dev/null 2>&1
-  diff -r "$DATA/$t" /tmp/out/$t >/dev/null && echo "$t OK" || echo "$t MISMATCH"
-done
-pkill -x server
-```
-
-All ten lines should say `OK` (files are byte-for-byte identical).
-
-More checks:
-
-| What | Command | Expected |
-|---|---|---|
-| Unknown topic | `./client 127.0.0.1 5000 nope /tmp/out` | `server error 2: unknown topic`, exit code 1 |
-| Case-insensitive | `./client 127.0.0.1 5000 FARFALLA /tmp/out` | works |
-| Server not running | `./client 127.0.0.1 5999 cane /tmp/out` | `cannot connect ...` |
-| Wrong arguments | `./server` or `./client` | usage message |
-| Graceful stop | Ctrl+C in the server terminal | prints totals and exits |
-
----
-
-## 7. Performance experiment (single vs multi-threaded)
-
-Goal: aggregate transfer rate vs number of clients, for both server modes.
-The recommended setup is **3 machines**: machine A runs the server, B and C each run half of the clients.
-
-**On machine A (server)** – run once per mode:
-
-```bash
-./server 5000 /path/to/raw-img --mode single      # first experiment set
-./server 5000 /path/to/raw-img --mode multi       # second experiment set
-```
-
-**On machines B and C** – start them at about the same moment (clocks should be NTP-synced):
-
-```bash
-# usage: ./bench.sh <server_ip> <port> <label> <N_on_this_machine> <results.csv> <topic1,topic2,...> [trial_id] [total_clients]
-# Machine B (8 clients, trial 1, intended total 16 clients):
-./bench.sh <A_ip> 5000 single 8 B.csv cane,cavallo,elefante,farfalla 1 16
-# Machine C (8 clients, trial 1, intended total 16 clients):
-./bench.sh <A_ip> 5000 single 8 C.csv gallina,gatto,mucca,pecora 1 16
-```
-
-Here 8 + 8 = **16 clients total**. Specifying the shared `trial_id` (e.g. `1`, `2`, `3`) and `total_clients` (`16`) ensures `aggregate.py` properly merges distributed client groups belonging to the same trial while keeping independent trial repeats separate.
-
-**Combine the results** (copy B.csv and C.csv to one place):
-
-```bash
-python3 aggregate.py B.csv C.csv -o summary_single.csv
-```
-
-Output columns: `trial, label, total_clients, ok, failed, total_data_bytes, wall_secs, aggregate_mbps, avg_client_mbps`.
-Aggregate rate = total data bytes of all clients in the trial / (latest end - earliest start).
-
-**Recommended sweep:** N = 2, 4, 8, 16, 32 (split evenly between B and C), for both `single` and `multi`,
-3–5 repeats per point (average them), and one warm-up run first so the server's disk cache is the same
-for every measurement. Plot aggregate Mbps vs N for both modes.
-
-> Single-machine runs (`127.0.0.1`) are only for checking that the scripts work. Their numbers are not
-> meaningful because server and clients compete for the same CPU and disk.
-
----
-
-## 8. Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| `bind: Address already in use` | An old server is still running: `pkill -x server`, wait a second, retry (or use another port) |
-| `cannot open topics dir` | Wrong path. Give the folder that directly contains `cane`, `gatto`, ...; use a full path (`$PWD/raw-img`) |
-| `./bench.sh: Permission denied` | `chmod +x bench.sh aggregate.py` |
-| `^M` / `bad interpreter` | `sed -i 's/\r$//' *.sh *.c *.h *.py Makefile` |
-| Client can't connect from another machine | Check the IP, that the server is running, the firewall (`sudo ufw allow 5000`), and that the VMs share a network |
-| `make: command not found` | `sudo apt install build-essential` (this code needs Linux, not plain Windows) |
-| `Permission denied` running `./server` | The folder is on a mount that doesn't allow executables; copy it to your home directory and run `make` there |
-
----
-
-## 9. Part 2 (fault tolerance) – to be added
-
-This section will describe, for each case, the build/run commands and the fault-injection mechanism:
-
-- **Interface (fixed by the assignment):**
-  `./server <port> <topics_root_dir> <failure_probability>` and the same client command as Part 1.
-- **Fault injection:** the server will make a random decision before each data chunk is sent and close the
-  connection with the given probability.
-- **Case 1:** client detects the drop and restarts the topic from the beginning.
-- **Case 2:** server keeps a session table and the client a checkpoint file; after a drop the client reconnects
-  and the transfer resumes from the last committed byte offset.
-- **Case 2 Enhanced:** several parallel TCP connections per transfer, with per-range recovery.
-
----
-
-## 10. Team
-
-_Group numbers, member names, roll numbers and individual contributions go here._

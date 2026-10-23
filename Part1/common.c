@@ -161,10 +161,10 @@ int safe_name(const char *name)
     if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return 0;
     /* Reject path separators */
     if (strchr(name, '/') != NULL || strchr(name, '\\') != NULL) return 0;
-    /* Reject control characters and DEL */
+    /* Reject DEL and NUL characters (allow newlines and binary byte sequences) */
     for (size_t i = 0; i < len; i++) {
         unsigned char uc = (unsigned char)name[i];
-        if (uc < 32 || uc == 127) return 0;
+        if (uc == 0 || uc == 127) return 0;
     }
     return 1;
 }

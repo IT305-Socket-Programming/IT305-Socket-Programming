@@ -253,9 +253,15 @@ int conn_recv(conn_t *c, proto_hdr_t *out_h, void *out_payload)
 int safe_name(const char *name)
 {
     if (!name || name[0] == '\0') return 0;
+    size_t len = strlen(name);
+    if (len > MAX_NAME) return 0;
     if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return 0;
     if (strstr(name, "..") != NULL) return 0;
     if (strchr(name, '/') != NULL || strchr(name, '\\') != NULL) return 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char uc = (unsigned char)name[i];
+        if (uc == 0 || uc == 127) return 0;
+    }
     return 1;
 }
 

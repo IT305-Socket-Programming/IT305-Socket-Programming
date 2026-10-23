@@ -18,7 +18,7 @@
 ### Invariant 1 (Path Traversal and Symlink Safety)
 *No untrusted input can cause file creation, truncation, or deletion outside the application-owned destination directory.*
 - **Enforcement:**
-  - `safe_name()` rejects all strings containing `/`, `\`, control characters ($< 32$ or $127$), empty strings, `.`, `..`, or lengths $> 255$.
+  - `safe_name()` rejects all strings containing `/`, `\`, NUL, DEL ($127$), empty strings, `.`, `..`, or lengths $> 255$ (valid POSIX filename characters including spaces, newlines, and UTF-8 are supported).
   - Destination file descriptors are opened strictly with flags:
     $$\text{flags} = O\_WRONLY \mid O\_CREAT \mid O\_TRUNC \mid O\_NOFOLLOW, \quad \text{mode} = 0644$$
   - If an existing symbolic link is encountered in the destination path, `open()` fails immediately with `ELOOP`, aborting the operation before truncating or modifying the link target.

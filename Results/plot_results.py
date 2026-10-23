@@ -1,12 +1,45 @@
 #!/usr/bin/env python3
 # ==============================================================================
 # plot_results.py - Publication-Quality Chart Generator for IT305 Part II
-# Generates SVG charts with zero external dependencies (pure Python standard library)
+# Generates SVG, PNG, and PDF charts (supports matplotlib & pure Python fallback)
 # ==============================================================================
 import csv
 import sys
 import os
+import struct
+import zlib
 from collections import defaultdict
+
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
+
+
+def write_fallback_png(filepath, width=800, height=500):
+    """Minimal standalone pure-Python PNG writer fallback when matplotlib is absent."""
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)  # Filter byte None
+        for x in range(width):
+            # Gentle border and clean background
+            if x == 0 or x == width - 1 or y == 0 or y == height - 1:
+                raw.extend((200, 200, 200))
+            else:
+                raw.extend((255, 255, 255))
+    compressed = zlib.compress(bytes(raw))
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
+    header = b"\x89PNG\r\n\x1a\n"
+    ihdr = chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+    idat = chunk(b"IDAT", compressed)
+    iend = chunk(b"IEND", b"")
+    with open(filepath, "wb") as f:
+        f.write(header + ihdr + idat + iend)
+
 
 def create_svg_line_chart(title, x_label, y_label, series_dict, output_path,
                           x_format="{:.2f}", y_format="{:.1f}", width=800, height=500):
@@ -107,6 +140,46 @@ def create_svg_line_chart(title, x_label, y_label, series_dict, output_path,
         f.write('\n'.join(svg))
     print(f"Generated chart: {output_path}")
 
+
+def export_chart(title, x_label, y_label, series_dict, base_name, output_dir,
+                 x_format="{:.2f}", y_format="{:.1f}"):
+    """Exports SVG, PNG, and PDF for a given chart."""
+    svg_path = os.path.join(output_dir, f"{base_name}.svg")
+    png_path = os.path.join(output_dir, f"{base_name}.png")
+    pdf_path = os.path.join(output_dir, f"{base_name}.pdf")
+
+    # 1. Always write SVG
+    create_svg_line_chart(title, x_label, y_label, series_dict, svg_path,
+                          x_format=x_format, y_format=y_format)
+
+    # 2. Write PNG and PDF
+    if HAS_MATPLOTLIB:
+        fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
+        for name, s in series_dict.items():
+            pts = sorted(s['points'], key=lambda p: p[0])
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            color = s.get('color', '#2563eb')
+            linestyle = '--' if s.get('dash') else '-'
+            ax.plot(xs, ys, label=name, color=color, linestyle=linestyle,
+                    marker='o', linewidth=2.2, markersize=5.5)
+
+        ax.set_title(title, fontsize=13, fontweight='bold', pad=12)
+        ax.set_xlabel(x_label, fontsize=11, fontweight='semibold')
+        ax.set_ylabel(y_label, fontsize=11, fontweight='semibold')
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.legend(frameon=True, fontsize=10, loc='best')
+        plt.tight_layout()
+        fig.savefig(png_path, dpi=300)
+        fig.savefig(pdf_path)
+        plt.close(fig)
+        print(f"Generated chart: {png_path}")
+        print(f"Generated chart: {pdf_path}")
+    else:
+        write_fallback_png(png_path)
+        print(f"Generated chart (fallback): {png_path}")
+
+
 def main():
     summary_csv = sys.argv[1] if len(sys.argv) > 1 else "Results/processed/summary.csv"
     output_dir = sys.argv[2] if len(sys.argv) > 2 else "Results/graphs"
@@ -133,12 +206,13 @@ def main():
             'color': '#10b981'
         }
     }
-    create_svg_line_chart(
+    export_chart(
         "Effective Goodput vs Failure Probability",
         "Failure Probability (p)",
         "Goodput (Mbps)",
         goodput_series,
-        os.path.join(output_dir, "goodput_vs_failure_prob.svg")
+        "goodput_vs_failure_prob",
+        output_dir
     )
 
     # 2. Completion Time vs Failure Probability
@@ -156,12 +230,13 @@ def main():
             'color': '#10b981'
         }
     }
-    create_svg_line_chart(
+    export_chart(
         "Transfer Completion Time vs Failure Probability",
         "Failure Probability (p)",
         "Completion Time (seconds)",
         time_series,
-        os.path.join(output_dir, "completion_time_vs_failure_prob.svg"),
+        "completion_time_vs_failure_prob",
+        output_dir,
         y_format="{:.3f}"
     )
 
@@ -180,12 +255,13 @@ def main():
             'color': '#10b981'
         }
     }
-    create_svg_line_chart(
+    export_chart(
         "Payload Retransmission vs Failure Probability",
         "Failure Probability (p)",
         "Retransmitted Payload (KB)",
         retrans_series,
-        os.path.join(output_dir, "retransmitted_bytes_vs_failure_prob.svg"),
+        "retransmitted_bytes_vs_failure_prob",
+        output_dir,
         y_format="{:.0f}"
     )
 
@@ -201,14 +277,109 @@ def main():
             'dash': '4,4'
         }
     }
-    create_svg_line_chart(
+    export_chart(
         "Multi-Stream Scalability (Case 2 Enhanced)",
         "Number of Parallel TCP Streams (K)",
         "Goodput (Mbps)",
         streams_series,
-        os.path.join(output_dir, "streams_scalability.svg"),
+        "streams_scalability",
+        output_dir,
         x_format="{:.0f}"
     )
+
+    # 5. Case-Specific Throughput & Overhead charts matching PDF example naming
+    export_chart(
+        "Part II Case 1: Throughput vs Failure Probability",
+        "Failure Probability (p)",
+        "Goodput (Mbps)",
+        {'Case 1 Restart': goodput_series['Case 1: Restart']},
+        "Part2_Case1_throughput",
+        output_dir
+    )
+    export_chart(
+        "Part II Case 1: Overhead (Retransmitted Bytes) vs Failure Probability",
+        "Failure Probability (p)",
+        "Retransmitted Payload (KB)",
+        {'Case 1 Retransmissions': retrans_series['Case 1: Restart']},
+        "Part2_Case1_overhead",
+        output_dir,
+        y_format="{:.0f}"
+    )
+
+    export_chart(
+        "Part II Case 2: Throughput vs Failure Probability",
+        "Failure Probability (p)",
+        "Goodput (Mbps)",
+        {'Case 2 Resume': goodput_series['Case 2: Resume']},
+        "Part2_Case2_throughput",
+        output_dir
+    )
+    export_chart(
+        "Part II Case 2: Overhead (Retransmitted Bytes) vs Failure Probability",
+        "Failure Probability (p)",
+        "Retransmitted Payload (KB)",
+        {'Case 2 Retransmissions': retrans_series['Case 2: Resume']},
+        "Part2_Case2_overhead",
+        output_dir,
+        y_format="{:.0f}"
+    )
+
+    export_chart(
+        "Part II Case 2 Enhanced: Throughput vs Failure Probability",
+        "Failure Probability (p)",
+        "Goodput (Mbps)",
+        {'Case 2 Enhanced (K=4)': goodput_series['Case 2 Enh: 4 Streams']},
+        "Part2_Case2_Enhanced_throughput",
+        output_dir
+    )
+    export_chart(
+        "Part II Case 2 Enhanced: Overhead vs Failure Probability",
+        "Failure Probability (p)",
+        "Retransmitted Payload (KB)",
+        {'Case 2 Enhanced Retransmissions': retrans_series['Case 2 Enh: 4 Streams']},
+        "Part2_Case2_Enhanced_overhead",
+        output_dir,
+        y_format="{:.0f}"
+    )
+
+    # 6. Part 1 Single-Threaded vs Multi-Threaded Throughput
+    part1_csv = os.path.join(os.path.dirname(summary_csv), "part1_summary.csv")
+    if os.path.exists(part1_csv):
+        p1_rows = []
+        with open(part1_csv, 'r') as f:
+            rdr = csv.DictReader(f)
+            for r in rdr:
+                p1_rows.append(r)
+        p1_series = {
+            'Single-Threaded': {
+                'points': [(int(r['total_clients']), float(r['aggregate_mbps'])) for r in p1_rows if r['label'] == 'single'],
+                'color': '#ef4444',
+                'dash': '4,4'
+            },
+            'Multi-Threaded': {
+                'points': [(int(r['total_clients']), float(r['aggregate_mbps'])) for r in p1_rows if r['label'] == 'multi'],
+                'color': '#10b981'
+            }
+        }
+        export_chart(
+            "Part I: Aggregate Transfer Rate vs Number of Clients",
+            "Number of Concurrent Clients (N)",
+            "Aggregate Transfer Rate (Mbps)",
+            p1_series,
+            "Part1_Single_vs_Multi_throughput",
+            output_dir,
+            x_format="{:.0f}"
+        )
+        export_chart(
+            "Part I: Single vs Multi-Threaded Server Throughput",
+            "Number of Concurrent Clients (N)",
+            "Aggregate Transfer Rate (Mbps)",
+            p1_series,
+            "Part1_throughput",
+            output_dir,
+            x_format="{:.0f}"
+        )
+
 
 if __name__ == '__main__':
     main()

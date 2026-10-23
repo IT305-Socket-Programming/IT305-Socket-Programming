@@ -1,20 +1,11 @@
-CC      ?= gcc
-CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wpedantic
-LDFLAGS ?= -pthread
+# Top-level Makefile for IT305 Socket Programming Project
+PARTS := Part1 Part2_Case1 Part2_Case2 Part2_Case2_Enhanced
 
-all: server client
-
-server: server.c common.c common.h
-	$(CC) $(CFLAGS) -pthread -o $@ server.c common.c $(LDFLAGS)
-
-client: client.c common.c common.h
-	$(CC) $(CFLAGS) -o $@ client.c common.c
-
-test: all
-	bash test_part1.sh
+all:
+	@for p in $(PARTS); do $(MAKE) -C $$p all || exit 1; done
 
 clean:
-	rm -f server client *.o *.csv
-	rm -rf test_out out
+	@for p in $(PARTS); do $(MAKE) -C $$p clean || exit 1; done
+	rm -rf out test_out .staging_*
 
-.PHONY: all clean test
+.PHONY: all clean

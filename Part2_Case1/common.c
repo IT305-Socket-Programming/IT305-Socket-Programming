@@ -461,10 +461,10 @@ int safe_name(const char *name)
     /* Disallow path separators */
     if (strchr(name, '/') != NULL || strchr(name, '\\') != NULL) return 0;
 
-    /* Disallow control characters and DEL */
+    /* Disallow DEL and NUL characters (allow newlines and binary byte sequences) */
     for (size_t i = 0; i < len; i++) {
         unsigned char uc = (unsigned char)name[i];
-        if (uc < 32 || uc == 127) return 0;
+        if (uc == 0 || uc == 127) return 0;
     }
     return 1;
 }
