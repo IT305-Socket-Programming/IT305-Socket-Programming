@@ -55,61 +55,36 @@
 \begin{titlepage}
     \pagenumbering{gobble}
     \centering
-    \vspace*{0.2cm}
+    \vspace*{0.1cm}
     
-    {\Large\textbf{\textcolor{primary}{DHIRUBHAI AMBANI INSTITUTE OF INFORMATION AND\\COMMUNICATION TECHNOLOGY (DA-IICT)}}}\\[0.4cm]
-    {\large\textbf{\textcolor{secondary}{Department of Information and Communication Technology}}}\\[0.2cm]
-    {\large\textbf{IT305: Computer Networks Laboratory --- Monsoon Semester}}\\[0.5cm]
+    \rule{\textwidth}{1.2pt}\\[0.35cm]
+    {\LARGE\textbf{\textcolor{primary}{IT305 LAB : Socket Programming Project}}}\\[0.25cm]
+    {\large\textit{Fault-Tolerant Topic-Based File Distribution Service}}\\[0.3cm]
+    \rule{\textwidth}{1.2pt}\\[0.5cm]
     
-    \rule{\textwidth}{1.5pt}\\[0.3cm]
-    {\huge\textbf{\textcolor{primary}{Fault-Tolerant Topic-Based File Distribution Service}}}\\[0.25cm]
-    {\large\textit{A High-Performance POSIX C99 Architecture Featuring Multi-Threaded Concurrency, Probabilistic Fault Injection, and Checkpoint-Resilient Multi-Stream Protocols}}\\[0.2cm]
-    \rule{\textwidth}{1.5pt}\\[0.4cm]
+    {\large\textbf{Project Group Information}}\\[0.15cm]
+    \textbf{Merged Lab Group:} Group 109 and Group 104 \quad (\textbf{Submission Identifier:} \texttt{Group\_109\_104})\\[0.25cm]
     
-    \begin{minipage}{0.98\textwidth}
-        \centering
-        \textbf{\large Project Group Information}\\[0.15cm]
-        \textbf{Merged Lab Group:} Group 109 and Group 104 \quad (\textbf{Submission Identifier:} \texttt{Group\_109\_104})\\[0.25cm]
-        
-        \small
-        \begin{tabularx}{\linewidth}{>{\bfseries}p{3.2cm} >{\centering\arraybackslash}p{2.2cm} >{\centering\arraybackslash}p{2.2cm} >{\raggedright\arraybackslash}X}
-            \toprule
-            \rowcolor{codebg}
-            \textbf{Full Name} & \textbf{Roll No.} & \textbf{Lab Group} & \textbf{Core Architectural Contribution} \\
-            \midrule
-            Darshan Talati & 202401046 & Group 109 & Part I multi-threading architecture, wire framing, socket pooling, and automated testing harness. \\
-            \addlinespace
-            Kavya Bhojwani & 202401090 & Group 109 & Part II Case 1 restart recovery, Case 2 session checkpointing engine, and SHA-256 verification. \\
-            \addlinespace
-            Aaryan Modi & 202401053 & Group 109 & Part II Case 2 Enhanced multi-stream parallel reactor, benchmark pipeline, and statistical logging. \\
-            \addlinespace
-            Siddh Shah & 202401088 & Group 104 & Fault injection Bernoulli simulation, boundary condition audits, and system integration. \\
-            \addlinespace
-            Tanish Sanghvi & 202401471 & Group 104 & Non-blocking reactor range scheduling, socket timeout handling, and stress test automation. \\
-            \addlinespace
-            Khushi Shah & 202401465 & Group 104 & Transactional staging directory lifecycle, atomic publication safety, and POSIX path traversal defense. \\
-            \bottomrule
-        \end{tabularx}
-    \end{minipage}
+    \begin{center}
+    \small
+    \renewcommand{\arraystretch}{1.15}
+    \begin{tabularx}{0.92\linewidth}{>{\bfseries}p{4.2cm} >{\centering\arraybackslash}p{2.8cm} >{\centering\arraybackslash}X}
+        \toprule
+        \rowcolor{codebg}
+        Full Name & Roll No. & Lab Group Number\\
+        \midrule
+        Darshan Talati & 202401046 & Group 109\\
+        Kavya Bhojwani & 202401090 & Group 109\\
+        Aaryan Modi    & 202401435 & Group 109\\
+        Siddh Shah     & 202401473 & Group 104\\
+        Tanish Sanghvi & 202401471 & Group 104\\
+        Khushi Shah    & 202401465 & Group 104\\
+        \bottomrule
+    \end{tabularx}
+    \end{center}
     
     \vfill
-    
-    \begin{minipage}{\textwidth}
-        \centering
-        \colorbox{lightbg}{%
-            \parbox{\dimexpr\textwidth-2\fboxsep-2pt\relax}{%
-                \vspace{0.15cm}
-                \centering
-                \textbf{\textcolor{primary}{INSTITUTIONAL ACADEMIC INTEGRITY DECLARATION}}\\[0.15cm]
-                \small
-                We hereby declare that this project report, associated source code, benchmark measurements, and test suites are entirely the original work of our group. No component of this submission has been plagiarized, copied, or adapted from other student groups, prior course offerings, or unauthorized third-party repositories. We understand and fully adhere to DA-IICT's Academic Integrity Code, and acknowledge that all group members share collective responsibility for the entirety of this submission.\\[0.15cm]
-            }%
-        }
-    \end{minipage}
-    
-    \vspace{0.3cm}
-    {\large\textbf{Submission Date:} October 2026}\\[0.15cm]
-    {\small\textbf{Course Instructor:} Prof.~Manish Chaturvedi \quad|\quad IT305 Faculty Team}
+
 \end{titlepage}
 
 \newpage
@@ -123,7 +98,7 @@
 % =============================================================================
 \section{Executive Summary}
 
-This report documents the architectural design, formal safety invariants, implementation details, and empirical benchmark evaluation of a high-performance, fault-tolerant, topic-based file distribution service developed in C99 using POSIX sockets and pthreads for the \textbf{IT305 Computer Networks Laboratory} at \textbf{DA-IICT}.
+This report documents the architectural design, formal safety invariants, implementation details, and empirical benchmark evaluation of a high-performance, fault-tolerant, topic-based file distribution service developed in C99 using POSIX sockets and pthreads.
 
 The service is engineered to disseminate topic-organized directory bundles (derived from the \textit{Animals10} image dataset) from a central server to multiple concurrent client nodes across both ideal local networks and unreliable, lossy network environments. The project is structured across two foundational tiers:
 \begin{enumerate}
@@ -159,14 +134,14 @@ typedef struct {
 When a client issues a request for a topic, the server performs a lookup in this table. If the topic exists, the server retrieves the file manifest and initiates streaming; if absent, it returns an explicit protocol error (\texttt{ERR\_TOPIC\_NOT\_FOUND}).
 
 \subsection{Wire Framing and Message Hierarchy}
-To eliminate framing ambiguity inherent in stream-oriented TCP transports without relying on delimiter parsing or per-chunk stop-and-wait overhead, the protocol utilizes rigid binary framing. Every frame comprises a fixed binary header followed by variable-length payload bytes.
+To eliminate framing ambiguity inherent in stream-oriented TCP transports without relying on delimiter parsing or per-chunk stop-and-wait overhead, the protocol utilizes rigid binary framing. Every frame comprises a fixed binary header serialized in \textbf{Network Byte Order} (Big-Endian) followed by variable-length payload bytes.
 
 \subsubsection{Fixed Header Wire Formats}
-To eliminate framing ambiguity inherent in stream-oriented TCP transports without relying on delimiter parsing or per-chunk stop-and-wait overhead, the protocol utilizes rigid binary framing. Every frame comprises a fixed binary header serialized in \textbf{Network Byte Order} (Big-Endian) followed by variable-length payload bytes.
 
 \paragraph{Part I Application Header (12 Bytes Fixed):}
 \begin{center}
 \small
+\renewcommand{\arraystretch}{1.15}
 \begin{tabularx}{\linewidth}{>{\centering\arraybackslash}p{2.2cm} >{\centering\arraybackslash}p{1.8cm} >{\centering\arraybackslash}p{1.8cm} >{\centering\arraybackslash}X >{\centering\arraybackslash}X}
     \toprule
     \rowcolor{codebg}
@@ -182,13 +157,14 @@ To eliminate framing ambiguity inherent in stream-oriented TCP transports withou
 \paragraph{Part II Fault-Tolerant Header (16 Bytes Fixed):}
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{>{\centering\arraybackslash}p{1.8cm} >{\centering\arraybackslash}p{1.4cm} >{\centering\arraybackslash}p{1.4cm} >{\centering\arraybackslash}p{1.8cm} >{\centering\arraybackslash}X >{\centering\arraybackslash}X}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabularx}{\linewidth}{>{\centering\arraybackslash}p{1.7cm} >{\centering\arraybackslash}p{1.3cm} >{\centering\arraybackslash}p{1.4cm} >{\centering\arraybackslash}p{1.4cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}X >{\centering\arraybackslash}X}
     \toprule
     \rowcolor{codebg}
-    \textbf{Byte 0--1} & \textbf{Byte 2} & \textbf{Byte 3} & \textbf{Byte 4--5} & \textbf{Byte 6--9} & \textbf{Byte 10--13} \\
+    \textbf{Byte 0--1} & \textbf{Byte 2} & \textbf{Byte 3} & \textbf{Byte 4--5} & \textbf{Byte 6--7} & \textbf{Byte 8--11} & \textbf{Byte 12--15} \\
     \midrule
-    \textbf{Magic (16b)} & \textbf{Version (8b)} & \textbf{Type (8b)} & \textbf{Flags (16b)} & \textbf{Payload Length (32b)} & \textbf{Seq / Stream ID (32b)} \\
-    \texttt{0x5446} & \texttt{0x02} & Message Code & Bitmask Flags & $0 \le L \le 65{,}536$ & Connection / Stream Tag \\
+    \textbf{Magic (16b)} & \textbf{Ver (8b)} & \textbf{Type (8b)} & \textbf{Flags (16b)} & \textbf{Status (16b)} & \textbf{Payload Length (32b)} & \textbf{Seq / Stream ID (32b)} \\
+    \texttt{0x5446} & \texttt{0x02} & Message Code & Bitmask Flags & Error / Status & $0 \le L \le 65{,}536$ & Monotonic Counter \\
     \bottomrule
 \end{tabularx}
 \end{center}
@@ -271,7 +247,7 @@ Case 2 Enhanced multiplexes topic distribution across $K \in \{1, 2, 4, 8\}$ con
 \subsection{Formal Safety Invariants \& Design Innovations}
 \begin{itemize}
     \item \textbf{Invariant 1 (Path Traversal Protection):} The function \texttt{safe\_name()} rejects all path traversal sequences containing \texttt{/}, \texttt{\char`\\}, \texttt{..}, \texttt{NUL}, or \texttt{DEL}. Filenames containing spaces, valid UTF-8 symbols, and POSIX-legal characters (including newlines) are handled cleanly via length-prefixed fields. Destination files are opened with:
-    $$\text{flags} = O\_WRONLY \mid O\_CREAT \mid O\_TRUNC \mid O\_NOFOLLOW, \quad \text{mode} = 0644$$
+    \[ \texttt{flags} = \texttt{O\_WRONLY} \mid \texttt{O\_CREAT} \mid \texttt{O\_TRUNC} \mid \texttt{O\_NOFOLLOW}, \qquad \texttt{mode} = \texttt{0644} \]
     \item \textbf{Invariant 2 (Transactional Staging \& Atomic Publication):} To guarantee that incomplete downloads never corrupt existing topics, clients stream data into an isolated temporary directory (\texttt{.staging\_<uuid>}). Only upon receiving \texttt{MSG\_TRANSFER\_DONE} and successfully verifying the 256-bit SHA-256 digest of every received file against the manifest does the client execute an atomic \texttt{rename()} replacing the target directory.
     \item \textbf{Invariant 3 (Self-Contained Cryptography):} An embedded, lock-free implementation of the FIPS 180-4 SHA-256 algorithm ensures cryptographic verification with zero external library dependencies.
 \end{itemize}
